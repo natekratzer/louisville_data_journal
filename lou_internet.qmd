@@ -1,0 +1,142 @@
+---
+title: "Internet in Louisville"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+```
+
+Download data using tidycensus to work with Census API
+
+```{r}
+api_key <- readLines("census_api_key.txt", n = 1)
+census_api_key(api_key, install = TRUE)
+```
+
+
+Start by searching for variables related to internet access
+```{r}
+var_list <- load_variables(2024, dataset = "acs5")
+
+int_list <- var_list |>  
+    filter(str_detect(concept, "Internet"))
+```
+
+[B28002](https://data.census.gov/table/ACSDT5Y2024.B28002?q=B28002)
+
+Found 3 to focus on:
+B28002_004 is an estimate of people with a broadband subscription of any type
+B28002_006 is an estimtate of people with only a cellular plan, need to subtract this from total
+B28003_002 is an estimate of people with a computer
+B28003_004 is an estimate of people with both a broadband subscription and a computer
+
+And then we want to get the _001 from each table to calculate percentages
+
+```{r}
+acs_data <- get_acs(
+    state = "KY", 
+    county = "Jefferson", 
+    geography = "tract", 
+    variables = c("B28002_001", "B28002_004", "B28002_006", "B28003_001", "B28003_002", "B20003_004"), 
+    geometry = TRUE, 
+    year = 2024
+    )
+```
+
+
+```{r}
+map_data <- acs_data |>
+    # filter(GEOID != "21111980100") |> #can exclude airport if desired
+    pivot_wider(names_from = variable, values_from = c(estimate, moe))|>
+    mutate(internet_access_percent = round(100 * (estimate_B28002_004 - estimate_B28002_006) / estimate_B28002_001, 2))
+```
+
+
+```{r}
+map_data |> 
+    ggplot(aes(fill = internet_access_percent)) + 
+    geom_sf(color = NA) + 
+    scale_fill_viridis_c() +
+    labs(title = "Broadband Internet Access in Louisville", 
+    subtitle = "Excluding Cell Phone Only Access",
+    caption = "Louisville Data Journal analysis using ACS B28002 2024 5yr data",
+    fill = "Percent") +
+    theme_void() +
+    theme(legend.position = "right")
+
+```
+
+
+```{r}
+sf::st_write(
+    map_data, 
+    dsn = "lou_internet24_update.geojson", 
+    driver ="GeoJSON"
+    )
+```
+
+
+```{r}
+map_data |>
+    select(GEOID, Name = NAME, Internet_Access = internet_access_percent) |>
+    write_csv("lou_internet24_update.csv")
+```
+
+## Longitudinal Data
+
+```{r}
+years <- list(c(2013:2019,2021:2024))
+
+get_yearly_data <- function(year_to_get) {
+    acs_data <- get_acs(
+    state = "KY", 
+    county = "Jefferson", 
+    geography = "county", 
+    variables = c("B28002_001", "B28002_004", "B28002_006", "B28003_001", "B28003_002", "B20003_004"), 
+    year = year_to_get,
+    survey = "acs1"
+    )
+
+    acs_data$year <- year_to_get
+
+    return(acs_data)
+}
+
+yearly_data <- pmap(years, get_yearly_data) |>
+    bind_rows()
+```
+
+```{r}
+wide_data <- yearly_data |> 
+    pivot_wider(names_from = variable, values_from = c(estimate, moe)) |>
+    mutate(internet_access_percent = round(100 * (estimate_B28002_004 - estimate_B28002_006) / estimate_B28002_001, 2))
+```
+
+### calculate margin or error
+
+(Census Documentation)[https://www.census.gov/content/dam/Census/library/publications/2020/acs/acs_general_handbook_2020_ch08.pdf]
+
+First we need to calculate margin of error from subtracting out cell phones
+
+```{r}
+wide_data <- wide_data |>
+    mutate(excl_cell = estimate_B28002_004 - estimate_B28002_006,
+           moe_excl_cell = sqrt(moe_B28002_004^2 + moe_B28002_004^2),
+           moe_percent = 100 * (1/estimate_B28002_001) * sqrt(moe_excl_cell^2 - internet_access_percent^2 * moe_B28002_001)
+    )
+```
+
+
+```{r}
+graph_data <- wide_data |>
+    filter(year > 2015) 
+
+ggplot(graph_data, aes(x = year, y = internet_access_percent)) + 
+    geom_point() + 
+    
+    geom_line() +
+    scale_x_continuous(breaks = seq(2016, 2024, 2)) +
+    theme_classic()
+```
