@@ -1,0 +1,91 @@
+---
+title: "Non-Partisan Elections come to Louisville"
+format: html
+---
+
+NPR story: https://www.lpm.org/news/2024-04-03/what-you-need-to-know-about-louisvilles-likely-switch-to-nonpartisan-elections
+2024 legislation: https://apps.legislature.ky.gov/record/24RS/hb388.html
+Beshear's official veto: https://apps.legislature.ky.gov/record/24rs/hb388/veto.pdf 
+- the mayor can't veto
+- 
+
+McCraney as independent former Democrat: https://www.courier-journal.com/story/news/politics/2025/01/29/louisville-metro-councilwoman-paula-mccraney-leaves-democratic-party/78020919007/
+
+Making information harder to find is generally bad. The one advantage of polarized parties is that it gives you a clear vote.
+
+(Maybe nod to proportional representation?, though I suppose for local needs we do want neighborhoods represented as neighborhoods)
+
+Party of local control lmao 
+
+I used the March 12, 2026 Council Meeting, which still has party affiliation listed 
+
+
+There are currently 13 Democrats, 12 Republicans, and 1 Independent 
+
+Load libraries
+```{r}
+library(tidyverse)
+library(arcgis)
+library(leaflet)
+library(leaflet.extras2)
+```
+
+
+```{r}
+# url is listed at this website https://data.lojic.org/datasets/louisville-ky-metro-council-districts/explore?location=38.189800%2C-85.678250%2C10
+data_url <- "https://gis.lojic.org/maps/rest/services/LojicSolutions/OpenDataPolitical/MapServer/8/query?outFields=*&where=1%3D1&f=geojson"
+
+districts <- arc_read(data_url)
+
+districts <- districts |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+```
+
+```{r}
+parties <- read_csv("council_party.csv")
+```
+
+```{r}
+districts <- districts |>
+    left_join(parties, join_by(COUNDIST == District))  
+```
+
+Note that Lojic has already complied and COUN_PARTY is NA for all districts
+
+```{r}
+ggplot(data = districts) +
+    geom_sf(aes(fill = Party)) +
+    geom_sf_label(aes(label = COUNDIST)) +
+    scale_fill_manual(values = c("D" = "blue", "R" = "red", "I"= "gray")) + 
+    theme_void()
+```
+
+
+```{r}
+custom_colors <- c("D" = "blue", "I"= "black", "R" = "red")
+partypal <- colorFactor(palette = custom_colors, domain = districts$Party)
+
+labels <- c(districts$COUNDIST, districts$COUN_NAME)
+
+labels <- sprintf(
+    "<strong>District %s</strong><br/>%s", districts$COUNDIST, districts$COUN_NAME) |>
+        lapply(htmltools::HTML)
+
+map <- leaflet(districts) |>
+    addTiles() |>
+    addPolygons(
+        fillColor = ~partypal(Party),
+        color = "black",
+        weight = 2,
+        fillOpacity = 0.3,
+        label = labels
+    ) 
+    
+ map <- map |>
+    addGeosearch(provider = geosearchProvider("OSM"),
+        options = geosearchOptions(style = "bar"))
+
+
+map
+```
+
