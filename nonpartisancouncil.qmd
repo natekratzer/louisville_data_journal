@@ -28,6 +28,7 @@ library(tidyverse)
 library(arcgis)
 library(leaflet)
 library(leaflet.extras2)
+library(htmlwidgets)
 ```
 
 
@@ -89,3 +90,34 @@ map <- leaflet(districts) |>
 map
 ```
 
+Gettti
+
+
+```{r}
+
+```
+
+
+```{r}
+saveWidget(file = "council_districts.html", selfcontained = false, libdir = )
+```
+
+Getting the saved widget to work with ghost was not easy. I had to use an iframe with srcdoc
+
+<iframe 
+  srcdoc='YOUR_FULL_HTML_HERE'
+  width="100%" 
+  height="500px" 
+  style="border: none;"
+  loading="lazy"
+  sandbox="allow-scripts">
+</iframe>
+
+Then I had to search and replaceall:
+
+So your two substitutions, in this order:
+
+& → &amp; (do this first, otherwise you'll double-escape the & in &#39;)
+' → &#39;
+
+Claude did somehow figure this out and it would not have happened from internet searches alone. 
