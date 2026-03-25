@@ -1,0 +1,201 @@
+---
+title: "Density and Louisville Metro Council"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(patchwork)
+library(arcgis)
+library(leaflet)
+library(leaflet.extras2)
+library(htmlwidgets)
+library(tidycensus)
+library(sf)
+```
+
+## District Data
+```{r}
+# url is listed at this website https://data.lojic.org/datasets/louisville-ky-metro-council-districts/explore?location=38.189800%2C-85.678250%2C10
+data_url <- "https://gis.lojic.org/maps/rest/services/LojicSolutions/OpenDataPolitical/MapServer/8/query?outFields=*&where=1%3D1&f=geojson"
+
+districts <- arc_read(data_url)
+
+districts <- districts |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+```
+
+Based on news reporting of which districts flipped in 2022 and 2024 elections
+```{r}
+parties <- read_csv("council_district_history.csv")
+```
+
+```{r}
+districts <- districts |>
+    left_join(parties, join_by(COUNDIST == District))  
+```
+
+
+## Census Data
+
+Download data using tidycensus to work with Census API
+```{r}
+api_key <- readLines("census_api_key.txt", n = 1)
+census_api_key(api_key, install = TRUE)
+```
+
+
+Start by searching for variables related to internet access
+```{r}
+var_list <- load_variables(2024, dataset = "acs5")
+
+int_list <- var_list |>  
+    filter(str_detect(concept, "Population"))
+```
+
+B01001 is a total population estimate
+
+Pull tract level data
+```{r}
+acs_data <- get_acs(
+    state = "KY", 
+    county = "Jefferson", 
+    geography = "tract", 
+    variables = c("B01001_001"), 
+    geometry = TRUE, 
+    year = 2024
+    )
+```
+
+
+# Joined data
+
+```{r}
+# --- 1. Make sure both layers share the same CRS ---
+# Use a projected CRS (not lat/lon) so area calculations are accurate
+acs_data <- st_transform(acs_data, crs = 3089)  # Kentucky State Plane (feet)
+districts <- st_transform(districts, crs = 3089)
+
+# --- 2. Calculate the area of each census tract BEFORE intersecting ---
+acs_data <- acs_data |>
+  mutate(tract_area = st_area(geometry))
+
+# --- 3. Intersect the two layers ---
+# This creates fragments where each piece belongs to one tract AND one district
+intersection <- st_intersection(acs_data, districts)
+
+# --- 4. Calculate the area of each fragment ---
+intersection <- intersection |>
+  mutate(fragment_area = st_area(geometry))
+
+# --- 5. Compute the area weight for each fragment ---
+# weight = what fraction of the original tract this fragment represents
+intersection <- intersection |>
+  mutate(weight = as.numeric(fragment_area / tract_area))
+
+# --- 6. Apply weights to population, then sum up by district ---
+district_population <- intersection |>
+  mutate(pop_estimate = estimate * weight) |>  
+  st_drop_geometry() |>
+  group_by(COUNDIST) |>  
+  summarise(estimated_population = sum(pop_estimate, na.rm = TRUE))
+
+# --- 7. Join back to the districts shapefile for mapping ---
+districts_with_pop <- districts |>
+  left_join(district_population, by = "COUNDIST")
+
+# Calculate Density
+districts_with_pop <- districts_with_pop |>
+  mutate(
+    area_sqmi = as.numeric(st_area(geometry)) / 27878400,  # convert sq feet to sq miles
+    density = estimated_population / area_sqmi
+  )
+```
+
+#Population map to check things
+```{r}
+districts_with_pop <- districts_with_pop |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+```
+
+```{r}
+num_pal <- colorNumeric(palette = "viridis", domain = districts_with_pop$estimated_population)
+
+labels <- sprintf(
+    "<strong>District %s</strong><br/>%s <br/>%f", districts_with_pop$COUNDIST, districts_with_pop$COUN_NAME, districts_with_pop$estimated_population) |>
+        lapply(htmltools::HTML)
+
+
+map <- leaflet(districts_with_pop) |>
+    addTiles() |>
+    addPolygons(
+        fillColor = ~pal(estimated_population),
+        color = "black",
+        weight = 2,
+        fillOpacity = 0.3,
+        label = labels,
+        labelOptions = labelOptions(textsize = "12px")
+    ) 
+    
+ map <- map |>
+    addGeosearch(provider = geosearchProvider("OSM"),
+        options = geosearchOptions(style = "bar"))
+
+
+map
+```
+
+# Density Map
+
+```{r}
+districts_with_pop <- districts_with_pop |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+
+num_pal <- colorNumeric(palette = "viridis", domain = districts_with_pop$density)
+
+
+
+#labels <- sprintf(
+#    "<strong>District %s</strong><br/>%s <br/>%f People Per Square Mile", districts_with_pop$COUNDIST, districts_with_pop$COUN_NAME, #districts_with_pop$density |>
+#        lapply(htmltools::HTML)
+
+labels <- paste0(districts_with_pop$COUNDIST, ":", scales::label_comma()(districts_with_pop$density))    
+
+
+map <- leaflet(districts_with_pop) |>
+    addTiles() |>
+    addPolygons(
+        fillColor = ~num_pal(density),
+        color = "black",
+        weight = 2,
+        fillOpacity = 0.3,
+        label = labels,
+        labelOptions = labelOptions(textsize = "12px")
+    ) 
+    
+ map <- map |>
+    addGeosearch(provider = geosearchProvider("OSM"),
+        options = geosearchOptions(style = "bar"))
+
+
+map
+
+```
+
+## For later, Claude on how to do average income per tract
+
+
+```{r}
+# install.packages("areal")
+library(areal)
+
+result <- aw_interpolate(
+  districts,
+  tid = district_id,       # target zone ID
+  source = acs_data,
+  sid = tract_id,          # source zone ID
+  weight = "sum",          # use "sum" for counts (pop), "total" for rates
+  output = "sf",
+  extensive = "population" # "extensive" = counts; use "intensive" for rates/averages
+)
+```
