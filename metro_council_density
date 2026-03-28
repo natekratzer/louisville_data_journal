@@ -25,38 +25,28 @@ districts <- districts |>
     sf::st_transform('+proj=longlat +datum=WGS84')
 ```
 
+## Louisville pre-merger boundaries
+```{r}
+city_url <- "https://gis.lojic.org/maps/rest/services/LojicSolutions/OpenDataDevelopment/MapServer/20/query?outFields=*&where=1%3D1&f=geojson"
+
+city_boundaries <- arc_read(city_url)
+```
+
 Based on news reporting of which districts flipped in 2022 and 2024 elections
 ```{r}
 parties <- read_csv("council_district_history.csv")
-```
 
-```{r}
 districts <- districts |>
     left_join(parties, join_by(COUNDIST == District))  
 ```
 
+## Pull in ACS population estimates since we want percent of population, not percent of land area
 
-## Census Data
-
-Download data using tidycensus to work with Census API
+Pull tract level population data
 ```{r}
 api_key <- readLines("census_api_key.txt", n = 1)
 census_api_key(api_key, install = TRUE)
-```
 
-
-Start by searching for variables related to internet access
-```{r}
-var_list <- load_variables(2024, dataset = "acs5")
-
-int_list <- var_list |>  
-    filter(str_detect(concept, "Population"))
-```
-
-B01001 is a total population estimate
-
-Pull tract level data
-```{r}
 acs_data <- get_acs(
     state = "KY", 
     county = "Jefferson", 
@@ -67,6 +57,58 @@ acs_data <- get_acs(
     )
 ```
 
+## City v County Calculations
+
+Join the shapefiles
+
+```{r}
+districts <- st_transform(districts, crs = 3089)
+city_boundaries <- st_transform(city_boundaries, crs = 3089)
+acs_data <- st_transform(acs_data, crs = 3089)  # Kentucky State Plane (feet)
+
+
+#Calculate area of each district, city, and tract
+districts <- districts |>
+    mutate(district_area = st_area(geometry))
+
+city_boundaries <- city_boundaries |>
+    mutate(city_area = st_area(geometry))
+
+acs_data <- acs_data |>
+  mutate(tract_area = st_area(geometry))
+
+#Intersect them all with city boundaries
+intersection <- st_intersection(acs_data, districts)
+
+city_map <- st_join(intersection, city_boundaries, join = st_intersects)
+```
+
+This produces 524 fragments, that is geographic areas that are an intersection of tracts, districts, and city boundaries and inherit characteristics from their overlap.
+
+So without some weighted estimates this multiplies the population by quite a bit as the population estimate is applied to each fragment the tract intersects with. 
+
+Start by checking population of city v non-city
+```{r}
+desc_stats <- city_map |>
+    mutate(fragment_area = st_area(geometry),
+           pop_weight = fragment_area / tract_area,
+           population = pop_weight * estimate) |>
+    st_drop_geometry() 
+
+#check that total population is close to equal
+print(sum(desc_stats$population))
+print(sum(acs_data$estimate))
+```
+
+```{r}
+sum_stats <- desc_stats |>
+    mutate(city = replace_na(SERVICE_DIST, "OUT")) |>
+    group_by(city, Party_2024) |> 
+    summarise(population = sum(population)) |>
+    ungroup() |>
+    group_by(city) |>
+    mutate(pct = 100 * population / sum(population))
+```
 
 # Joined data
 
@@ -181,6 +223,24 @@ map <- leaflet(districts_with_pop) |>
 map
 
 ```
+
+```{r}
+party_colors <- c("R" = "red", "D" = "blue", "I" = "light blue")
+
+p <- ggplot(districts_with_pop, aes(x = reorder(COUNDIST, density), y = density, fill = Party_2024)) +
+    geom_col() +
+    coord_flip() +
+    scale_fill_manual(values = party_colors, labels = c("Democrat", "Independent", "Republican")) +
+    labs(title = "Democrats and Republicans are sorted by population density",
+        x = "Council District",
+        y = "Persons per Square Feet",
+        fill = "Political Party") +
+    theme_minimal() + 
+    theme(plot.title = element_text(face = "bold", size = 14))
+
+p
+```
+
 
 ## For later, Claude on how to do average income per tract
 
