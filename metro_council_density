@@ -14,7 +14,13 @@ library(tidycensus)
 library(sf)
 ```
 
-## District Data
+## Data from four sources
+
+1. Shapefile of metro council districs
+2. Shapefile of pre-merger boundaries aka urban services district
+3. Partisan control of metro council taken from local news and put into a .csv file
+4. ACS tract population data
+
 ```{r}
 # url is listed at this website https://data.lojic.org/datasets/louisville-ky-metro-council-districts/explore?location=38.189800%2C-85.678250%2C10
 data_url <- "https://gis.lojic.org/maps/rest/services/LojicSolutions/OpenDataPolitical/MapServer/8/query?outFields=*&where=1%3D1&f=geojson"
@@ -23,29 +29,24 @@ districts <- arc_read(data_url)
 
 districts <- districts |>
     sf::st_transform('+proj=longlat +datum=WGS84')
-```
 
-## Louisville pre-merger boundaries
-```{r}
+# City boundaries
 city_url <- "https://gis.lojic.org/maps/rest/services/LojicSolutions/OpenDataDevelopment/MapServer/20/query?outFields=*&where=1%3D1&f=geojson"
 
 city_boundaries <- arc_read(city_url)
-```
 
-Based on news reporting of which districts flipped in 2022 and 2024 elections
-```{r}
+# Party Control 
+
 parties <- read_csv("council_district_history.csv")
 
 districts <- districts |>
     left_join(parties, join_by(COUNDIST == District))  
-```
 
-## Pull in ACS population estimates since we want percent of population, not percent of land area
+# ACS population data
 
-Pull tract level population data
-```{r}
-api_key <- readLines("census_api_key.txt", n = 1)
-census_api_key(api_key, install = TRUE)
+#with the install line the Census API key is now part of background R session
+#api_key <- readLines("census_api_key.txt", n = 1)
+#census_api_key(api_key, install = TRUE)
 
 acs_data <- get_acs(
     state = "KY", 
@@ -55,6 +56,35 @@ acs_data <- get_acs(
     geometry = TRUE, 
     year = 2024
     )
+
+acs_data_2022 <- get_acs(
+    state = "KY", 
+    county = "Jefferson", 
+    geography = "tract", 
+    variables = c("B01001_001"), 
+    geometry = TRUE, 
+    year = 2022
+    ) |>
+      select(GEOID, estimate_2022 = estimate) |>
+      st_drop_geometry() |>
+      as_tibble()
+
+acs_data_2020 <- get_acs(
+    state = "KY", 
+    county = "Jefferson", 
+    geography = "tract", 
+    variables = c("B01001_001"), 
+    geometry = TRUE, 
+    year = 2020
+    ) |>
+      select(GEOID, estimate_2020 = estimate) |>
+      st_drop_geometry() |>
+      as_tibble()
+
+
+
+acs_data <- left_join(acs_data, acs_data_2020, by = "GEOID")  
+acs_data <- left_join(acs_data, acs_data_2022, by = "GEOID")  
 ```
 
 ## City v County Calculations
@@ -92,7 +122,9 @@ Start by checking population of city v non-city
 desc_stats <- city_map |>
     mutate(fragment_area = st_area(geometry),
            pop_weight = fragment_area / tract_area,
-           population = pop_weight * estimate) |>
+           population = pop_weight * estimate,
+           population_2022 = pop_weight * estimate_2022,
+           population_2020 = pop_weight * estimate_2020) |>
     st_drop_geometry() 
 
 #check that total population is close to equal
@@ -100,6 +132,8 @@ print(sum(desc_stats$population))
 print(sum(acs_data$estimate))
 ```
 
+
+This produces the high level estimates of percent of city population represented by Democrats (87%) and percent of county represented by Republicans (71%) 
 ```{r}
 sum_stats <- desc_stats |>
     mutate(city = replace_na(SERVICE_DIST, "OUT")) |>
@@ -110,7 +144,165 @@ sum_stats <- desc_stats |>
     mutate(pct = 100 * population / sum(population))
 ```
 
-# Joined data
+This runs it back to 2020, sort of. To do that properly we need 2020 acs data as well.  
+
+```{r}
+sum_stats_2020 <- desc_stats |>
+    mutate(city = replace_na(SERVICE_DIST, "OUT")) |>
+    group_by(city, Party_2020) |> 
+    summarise(population_2020 = sum(population_2020)) |>
+    ungroup() |>
+    group_by(city) |>
+    mutate(pct = 100 * population_2020 / sum(population_2020))
+
+sum_stats_2022 <- desc_stats |>
+    mutate(city = replace_na(SERVICE_DIST, "OUT")) |>
+    group_by(city, Party_2022) |> 
+    summarise(population_2022 = sum(population_2022)) |>
+    ungroup() |>
+    group_by(city) |>
+    mutate(pct = 100 * population_2022 / sum(population_2022))
+```
+
+
+## Making a map of this, somehow
+
+```{r}
+draw_districts <- districts |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+
+draw_boundaries <- city_boundaries |>
+    sf::st_transform('+proj=longlat +datum=WGS84')
+
+```
+
+# With leaflet
+```{r}
+custom_colors <- c("D" = "blue", "I"= "grey", "R" = "red")
+partypal <- colorFactor(palette = custom_colors, domain = draw_map$party_2024)
+
+map <- leaflet(draw_districts) %>%
+    #addTiles() %>%
+    addPolygons(
+        fillColor = ~partypal(Party_2024),
+        weight = 2,
+        color = "purple",
+        fillOpacity = 0.6
+    ) %>% 
+    addPolygons(
+        data = draw_boundaries,
+        weight = 4,
+        color = "black",
+        fillColor = "transparent"
+    )
+    
+
+map
+```
+
+## With ggplot2
+
+```{r}
+map_2024 <- ggplot(data = draw_districts) +
+    geom_sf(aes(fill = Party_2024), 
+        show.legend = FALSE, 
+        color = "grey", 
+        linewidth = 0.2) +
+    scale_fill_manual(values = c("D" = "blue", "R" = "red", "I"= "gray")) + 
+    theme_void() +
+    geom_sf(data = draw_boundaries, 
+        fill = NA, 
+        color = "black", 
+        linewidth = 1) +
+    labs(title = "2024") +
+    theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+map_2022 <- ggplot(data = draw_districts) +
+    geom_sf(aes(fill = Party_2022), 
+        show.legend = FALSE, 
+        color = "grey", 
+        linewidth = 0.2) +
+    scale_fill_manual(values = c("D" = "blue", "R" = "red", "I"= "gray")) + 
+    theme_void() +
+    geom_sf(data = draw_boundaries, 
+        fill = NA, 
+        color = "black", 
+        linewidth = 1) +
+    labs(title = "2022") +
+    theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+map_2020 <- ggplot(data = draw_districts) +
+    geom_sf(aes(fill = Party_2020), 
+        show.legend = FALSE, 
+        color = "grey", 
+        linewidth = 0.2) +
+    scale_fill_manual(values = c("D" = "blue", "R" = "red", "I"= "gray")) + 
+    theme_void() +
+    geom_sf(data = draw_boundaries, 
+        fill = NA, 
+        color = "black", 
+        linewidth = 1) +
+    labs(title = "2020") +
+    theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+transition_map <- map_2020 + map_2022 + map_2024
+
+transition_map +
+    plot_annotation(title = "Partisan Change in Metro Council", 
+    caption = paste("The shift was concentrated in the southwest, outside of the original city boundaries, outlined in black on both maps.",
+    "Council districts with a Democratic representative are in blue, Republican in red, and Independent in grey.",
+     sep = "\n"), 
+    theme = theme(plot.title = element_text(face = "bold", 
+        size = 20, 
+        hjust = 0.5), plot.caption = element_text(hjust = 0.5)))
+```
+
+## Produce a bar plot
+
+```{r}
+sum_stats <- sum_stats |>
+    rename(party = Party_2024) |>
+    mutate(year = 2024)
+
+sum_stats_2022 <- sum_stats_2022 |>
+    rename(party = Party_2022) |>
+    mutate(year = 2022)
+
+sum_stats_2020 <- sum_stats_2020 |>
+    rename(party = Party_2020) |>
+    mutate(year = 2020)
+
+bar_stats <- bind_rows(sum_stats, sum_stats_2022, sum_stats_2020)
+```
+
+```{r}
+library(units)
+
+plot_data <- bar_stats |>
+    mutate(
+        city = fct_recode(city, "City" = "IN", "County" = "OUT"),
+        party = fct_recode(party, "Democrat" = "D", "Republican" = "R", "Independent" = "I"),
+        party = trimws(party),
+        party = fct_relevel(party, "Republican", "Independent", "Democrat"),
+        pct = drop_units(pct) 
+    )
+
+
+p <- ggplot(plot_data, (aes(x = city, y = pct, fill = party ))) +
+    geom_col(width = 0.8) +
+    scale_fill_manual(values = c("Democrat" = "blue", "Republican" = "red", "Independent"= "gray")) +
+    facet_wrap(~year) +
+    theme_minimal() +
+    labs(title = "Louisville's shift toward a Republican council is concentrated outside the old city boundaries",
+        x = "Location prior to city-county merger",
+        y = "Percent of People Represented by Party in Metro Council",
+        fill = "Metro Council Party") +
+    theme(plot.title = element_text(size = 14, face = "bold"))
+
+p
+```
+
+# Joined data for density work
 
 ```{r}
 # --- 1. Make sure both layers share the same CRS ---
