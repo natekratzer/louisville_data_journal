@@ -363,7 +363,7 @@ labels <- sprintf(
 map <- leaflet(districts_with_pop) |>
     addTiles() |>
     addPolygons(
-        fillColor = ~pal(estimated_population),
+        fillColor = ~num_pal(estimated_population),
         color = "black",
         weight = 2,
         fillOpacity = 0.3,
@@ -425,8 +425,8 @@ p <- ggplot(districts_with_pop, aes(x = reorder(COUNDIST, density), y = density,
     scale_fill_manual(values = party_colors, labels = c("Democrat", "Independent", "Republican")) +
     labs(title = "Democrats and Republicans are sorted by population density",
         x = "Council District",
-        y = "Persons per Square Feet",
-        fill = "Political Party") +
+        y = "Persons per Square Mile",
+        fill = "Political Party") +ß
     theme_minimal() + 
     theme(plot.title = element_text(face = "bold", size = 14))
 

@@ -25,6 +25,7 @@ There are currently 13 Democrats, 12 Republicans, and 1 Independent
 Load libraries
 ```{r}
 library(tidyverse)
+library(patchwork)
 library(arcgis)
 library(leaflet)
 library(leaflet.extras2)
@@ -54,11 +55,21 @@ districts <- districts |>
 Note that Lojic has already complied and COUN_PARTY is NA for all districts
 
 ```{r}
-ggplot(data = districts) +
-    geom_sf(aes(fill = Party)) +
-    geom_sf_label(aes(label = COUNDIST)) +
+partisan_map <- ggplot(data = districts) +
+    geom_sf(aes(fill = Party), show.legend = FALSE) +
+    #geom_sf_label(aes(label = COUNDIST)) +
     scale_fill_manual(values = c("D" = "blue", "R" = "red", "I"= "gray")) + 
     theme_void()
+
+nonpartisan_map <- ggplot(data = districts) +
+    geom_sf() +
+    #geom_sf_label(aes(label = COUNDIST)) +
+    theme_void()
+
+transition_map <- partisan_map + nonpartisan_map +
+   plot_annotation("Louisville's Metro Council Elections are becoming Nonpartisan", caption = "",  theme = theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5)))
+
+transition_map
 ```
 
 
@@ -69,7 +80,7 @@ partypal <- colorFactor(palette = custom_colors, domain = districts$Party)
 labels <- c(districts$COUNDIST, districts$COUN_NAME)
 
 labels <- sprintf(
-    "<strong>District %s</strong><br/>%s", districts$COUNDIST, districts$COUN_NAME) |>
+    "<strong>District %s</strong><br/>%s <br/>%s <br/>%s", districts$COUNDIST, districts$COUN_NAME, districts$COUN_EMAIL, districts$COUN_PHON) |>
         lapply(htmltools::HTML)
 
 map <- leaflet(districts) |>
@@ -79,7 +90,8 @@ map <- leaflet(districts) |>
         color = "black",
         weight = 2,
         fillOpacity = 0.3,
-        label = labels
+        label = labels,
+        labelOptions = labelOptions(textsize = "12px")
     ) 
     
  map <- map |>
@@ -90,16 +102,8 @@ map <- leaflet(districts) |>
 map
 ```
 
-Gettti
-
-
 ```{r}
-
-```
-
-
-```{r}
-saveWidget(file = "council_districts.html", selfcontained = false, libdir = )
+saveWidget(map, file = "docs/council_districts.html", selfcontained = FALSE)
 ```
 
 Getting the saved widget to work with ghost was not easy. I had to use an iframe with srcdoc
